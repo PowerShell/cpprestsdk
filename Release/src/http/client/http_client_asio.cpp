@@ -76,6 +76,10 @@
 
 using boost::asio::ip::tcp;
 
+typedef boost::asio::ip::tcp::socket tcp_socket;
+typedef boost::asio::local::stream_protocol::socket stream_socket;
+
+
 #ifdef __ANDROID__
 using utility::conversions::details::to_string;
 #else
@@ -111,11 +115,13 @@ static std::string generate_base64_userpass(const ::web::credentials& creds)
     return utility::conversions::to_utf8string(utility::conversions::to_base64(credentials_buffer));
 }
 
-class asio_connection_pool;
+template<class SOCKET_T> class asio_connection_pool;
+template<class SOCKET_T> class asio_client;
 
+template<class SOCKET_T>
 class asio_connection
 {
-    friend class asio_client;
+    friend class asio_client<SOCKET_T>;
 public:
     asio_connection(boost::asio::io_service& io_service)
         : m_socket(io_service),
@@ -141,7 +147,7 @@ public:
         {
             ssl_context_callback(ssl_context);
         }
-        m_ssl_stream = utility::details::make_unique<boost::asio::ssl::stream<boost::asio::ip::tcp::socket &>>(m_socket, ssl_context);
+        m_ssl_stream = utility::details::make_unique<boost::asio::ssl::stream<SOCKET_T &>>(m_socket, ssl_context);
     }
 
     void close()
@@ -265,8 +271,8 @@ private:
     // because timeouts and cancellation can touch the socket at the same time
     // as normal message processing.
     std::mutex m_socket_lock;
-    tcp::socket m_socket;
-    std::unique_ptr<boost::asio::ssl::stream<tcp::socket &> > m_ssl_stream;
+    SOCKET_T m_socket;
+    std::unique_ptr<boost::asio::ssl::stream<SOCKET_T &> > m_ssl_stream;
 
     bool m_is_reused;
     bool m_keep_alive;
@@ -299,13 +305,14 @@ private:
 ///   }
 /// </code>
 /// </remarks>
-class asio_connection_pool : public std::enable_shared_from_this<asio_connection_pool>
+template<class SOCKET_T>
+class asio_connection_pool : public std::enable_shared_from_this<asio_connection_pool<SOCKET_T>>
 {
 public:
     asio_connection_pool() : m_pool_epoch_timer(crossplat::threadpool::shared_instance().service())
     {}
 
-    std::shared_ptr<asio_connection> acquire()
+    std::shared_ptr<asio_connection<SOCKET_T>> acquire()
     {
         std::lock_guard<std::mutex> lock(m_lock);
 
@@ -318,7 +325,7 @@ public:
         return conn;
     }
 
-    void release(const std::shared_ptr<asio_connection>& connection)
+    void release(const std::shared_ptr<asio_connection<SOCKET_T>>& connection)
     {
         connection->cancel();
 
@@ -328,7 +335,7 @@ public:
         std::lock_guard<std::mutex> lock(m_lock);
         if (!is_timer_running)
         {
-            start_epoch_interval(shared_from_this());
+            start_epoch_interval(this->shared_from_this());
             is_timer_running = true;
         }
 
@@ -338,12 +345,12 @@ public:
 
 private:
     // Note: must be called under m_lock
-    static void start_epoch_interval(const std::shared_ptr<asio_connection_pool>& pool)
+    static void start_epoch_interval(const std::shared_ptr<asio_connection_pool<SOCKET_T>>& pool)
     {
         _ASSERTE(pool.get() != nullptr);
 
         auto& self = *pool;
-        std::weak_ptr<asio_connection_pool> weak_pool = pool;
+        std::weak_ptr<asio_connection_pool<SOCKET_T>> weak_pool = pool;
 
         self.m_prev_epoch = self.m_epoch;
         pool->m_pool_epoch_timer.expires_from_now(boost::posix_time::seconds(30));
@@ -368,7 +375,7 @@ private:
             {
                 auto prev_epoch = self.m_prev_epoch;
                 auto erase_end = std::find_if(self.m_connections.begin(), self.m_connections.end(),
-                    [prev_epoch](std::pair<uint64_t, std::shared_ptr<asio_connection>>& p)
+                    [prev_epoch](std::pair<uint64_t, std::shared_ptr<asio_connection<SOCKET_T>>>& p)
                 {
                     return p.first > prev_epoch;
                 });
@@ -380,7 +387,7 @@ private:
     }
 
     std::mutex m_lock;
-    std::deque<std::pair<uint64_t, std::shared_ptr<asio_connection>>> m_connections;
+    std::deque<std::pair<uint64_t, std::shared_ptr<asio_connection<SOCKET_T>>>> m_connections;
 
     uint64_t m_epoch = 0;
     uint64_t m_prev_epoch = 0;
@@ -388,13 +395,14 @@ private:
     boost::asio::deadline_timer m_pool_epoch_timer;
 };
 
+template<class SOCKET_T>
 class asio_client final : public _http_client_communicator
 {
 public:
     asio_client(http::uri&& address, http_client_config&& client_config)
         : _http_client_communicator(std::move(address), std::move(client_config))
         , m_resolver(crossplat::threadpool::shared_instance().service())
-        , m_pool(std::make_shared<asio_connection_pool>())
+        , m_pool(std::make_shared<asio_connection_pool<SOCKET_T>>())
         , m_start_with_ssl(base_uri().scheme() == U("https") && !this->client_config().proxy().is_specified())
     {}
 
@@ -402,18 +410,18 @@ public:
 
     unsigned long open() override { return 0; }
 
-    void release_connection(std::shared_ptr<asio_connection>& conn)
+    void release_connection(std::shared_ptr<asio_connection<SOCKET_T>>& conn)
     {
         m_pool->release(conn);
     }
-    std::shared_ptr<asio_connection> obtain_connection()
+    std::shared_ptr<asio_connection<SOCKET_T>> obtain_connection()
     {
-        std::shared_ptr<asio_connection> conn = m_pool->acquire();
+        std::shared_ptr<asio_connection<SOCKET_T>> conn = m_pool->acquire();
 
         if (conn == nullptr)
         {
             // Pool was empty. Create a new connection
-            conn = std::make_shared<asio_connection>(crossplat::threadpool::shared_instance().service());
+            conn = std::make_shared<asio_connection<SOCKET_T>>(crossplat::threadpool::shared_instance().service());
             if (m_start_with_ssl)
                 conn->upgrade_to_ssl(this->client_config().get_ssl_context_callback());
         }
@@ -426,17 +434,18 @@ public:
 public:
     tcp::resolver m_resolver;
 private:
-    const std::shared_ptr<asio_connection_pool> m_pool;
+    const std::shared_ptr<asio_connection_pool<SOCKET_T>> m_pool;
     const bool m_start_with_ssl;
 };
 
-class asio_context : public request_context, public std::enable_shared_from_this<asio_context>
+template<class SOCKET_T>
+class asio_context : public request_context, public std::enable_shared_from_this<asio_context<SOCKET_T>>
 {
-    friend class asio_client;
+    friend class asio_client<SOCKET_T>;
 public:
     asio_context(const std::shared_ptr<_http_client_communicator> &client,
                  http_request &request,
-                 const std::shared_ptr<asio_connection> &connection)
+                 const std::shared_ptr<asio_connection<SOCKET_T>> &connection)
     : request_context(client, request)
     , m_content_length(0)
     , m_needChunked(false)
@@ -451,12 +460,12 @@ public:
     {
         m_timer.stop();
         // Release connection back to the pool. If connection was not closed, it will be put to the pool for reuse.
-        std::static_pointer_cast<asio_client>(m_http_client)->release_connection(m_connection);
+        std::static_pointer_cast<asio_client<SOCKET_T>>(m_http_client)->release_connection(m_connection);
     }
 
     static std::shared_ptr<request_context> create_request_context(std::shared_ptr<_http_client_communicator> &client, http_request &request)
     {
-        auto client_cast(std::static_pointer_cast<asio_client>(client));
+        auto client_cast(std::static_pointer_cast<asio_client<SOCKET_T>>(client));
         auto connection(client_cast->obtain_connection());
         auto ctx = std::make_shared<asio_context>(client, request, connection);
         ctx->m_timer.set_ctx(std::weak_ptr<asio_context>(ctx));
@@ -500,8 +509,8 @@ public:
 
             tcp::resolver::query query(utility::conversions::to_utf8string(proxy_host), to_string(proxy_port));
 
-            auto client = std::static_pointer_cast<asio_client>(m_context->m_http_client);
-            client->m_resolver.async_resolve(query, boost::bind(&ssl_proxy_tunnel::handle_resolve, shared_from_this(), boost::asio::placeholders::error, boost::asio::placeholders::iterator));
+            auto client = std::static_pointer_cast<asio_client<SOCKET_T>>(m_context->m_http_client);
+            client->m_resolver.async_resolve(query, boost::bind(&ssl_proxy_tunnel::handle_resolve, this->shared_from_this(), boost::asio::placeholders::error, boost::asio::placeholders::iterator));
         }
 
     private: 
@@ -515,7 +524,7 @@ public:
             {
                 m_context->m_timer.reset();
                 auto endpoint = *endpoints;
-                m_context->m_connection->async_connect(endpoint, boost::bind(&ssl_proxy_tunnel::handle_tcp_connect, shared_from_this(), boost::asio::placeholders::error, ++endpoints));
+                m_context->m_connection->async_connect(endpoint, boost::bind(&ssl_proxy_tunnel::handle_tcp_connect, this->shared_from_this(), boost::asio::placeholders::error, ++endpoints));
             }
         }
 
@@ -524,7 +533,7 @@ public:
             if (!ec)
             {
                 m_context->m_timer.reset();
-                m_context->m_connection->async_write(m_request, boost::bind(&ssl_proxy_tunnel::handle_write_request, shared_from_this(), boost::asio::placeholders::error));
+                m_context->m_connection->async_write(m_request, boost::bind(&ssl_proxy_tunnel::handle_write_request, this->shared_from_this(), boost::asio::placeholders::error));
             }
             else if (endpoints == tcp::resolver::iterator())
             {
@@ -534,11 +543,11 @@ public:
             {
                 m_context->m_timer.reset();
                 //// Replace the connection. This causes old connection object to go out of scope.
-                auto client = std::static_pointer_cast<asio_client>(m_context->m_http_client);
+                auto client = std::static_pointer_cast<asio_client<SOCKET_T>>(m_context->m_http_client);
                 m_context->m_connection = client->obtain_connection();
 
                 auto endpoint = *endpoints;
-                m_context->m_connection->async_connect(endpoint, boost::bind(&ssl_proxy_tunnel::handle_tcp_connect, shared_from_this(), boost::asio::placeholders::error, ++endpoints));
+                m_context->m_connection->async_connect(endpoint, boost::bind(&ssl_proxy_tunnel::handle_tcp_connect, this->shared_from_this(), boost::asio::placeholders::error, ++endpoints));
             }
 
         }
@@ -548,7 +557,7 @@ public:
             if (!err)
             {
                 m_context->m_timer.reset();
-                m_context->m_connection->async_read_until(m_response, CRLF + CRLF, boost::bind(&ssl_proxy_tunnel::handle_status_line, shared_from_this(), boost::asio::placeholders::error));
+                m_context->m_connection->async_read_until(m_response, CRLF + CRLF, boost::bind(&ssl_proxy_tunnel::handle_status_line, this->shared_from_this(), boost::asio::placeholders::error));
             }
             else
             {
@@ -603,7 +612,7 @@ public:
                     new_ctx->m_request_completion = m_context->m_request_completion;
                     new_ctx->m_cancellationRegistration = m_context->m_cancellationRegistration;
             
-                    auto client = std::static_pointer_cast<asio_client>(m_context->m_http_client);
+                    auto client = std::static_pointer_cast<asio_client<SOCKET_T>>(m_context->m_http_client);
                     // Resend the request using the new context.
                     client->send_request(new_ctx);
                 }
@@ -629,189 +638,7 @@ public:
         ssl_tunnel
     };
 
-    void start_request()
-    {
-        if (m_request._cancellation_token().is_canceled())
-        {
-            request_context::report_error(make_error_code(std::errc::operation_canceled).value(), "Request canceled by user.");
-            return;
-        }
-        
-        http_proxy_type proxy_type = http_proxy_type::none;
-        std::string proxy_host;
-        int proxy_port = -1;
-        
-        // There is no support for auto-detection of proxies on non-windows platforms, it must be specified explicitly from the client code.
-        if (m_http_client->client_config().proxy().is_specified())
-        {
-            proxy_type = m_http_client->base_uri().scheme() == U("https") ? http_proxy_type::ssl_tunnel : http_proxy_type::http;
-            auto proxy = m_http_client->client_config().proxy();
-            auto proxy_uri = proxy.address();
-            proxy_port = proxy_uri.port() == -1 ? 8080 : proxy_uri.port();
-            proxy_host = utility::conversions::to_utf8string(proxy_uri.host());
-        }
-        
-        auto start_http_request_flow = [proxy_type, proxy_host, proxy_port AND_CAPTURE_MEMBER_FUNCTION_POINTERS](std::shared_ptr<asio_context> ctx)
-        {
-            if (ctx->m_request._cancellation_token().is_canceled())
-            {
-                ctx->request_context::report_error(make_error_code(std::errc::operation_canceled).value(), "Request canceled by user.");
-                return;
-            }
-                
-            const auto &base_uri = ctx->m_http_client->base_uri();
-            const auto full_uri = uri_builder(base_uri).append(ctx->m_request.relative_uri()).to_uri();
-                
-            // For a normal http proxy, we need to specify the full request uri, otherwise just specify the resource
-            auto encoded_resource = proxy_type == http_proxy_type::http ? full_uri.to_string() : full_uri.resource().to_string();
-                
-            if (encoded_resource.empty())
-            {
-                encoded_resource = U("/");
-            }
-                
-            const auto &method = ctx->m_request.method();
-                
-            // stop injection of headers via method
-            // resource should be ok, since it's been encoded
-            // and host won't resolve
-            if (!::web::http::details::validate_method(method))
-            {
-                ctx->report_exception(http_exception("The method string is invalid."));
-                return;
-            }
-                
-            std::ostream request_stream(&ctx->m_body_buf);
-            request_stream.imbue(std::locale::classic());
-            const auto &host = utility::conversions::to_utf8string(base_uri.host());
-                
-            request_stream << utility::conversions::to_utf8string(method) << " " << utility::conversions::to_utf8string(encoded_resource) << " " << "HTTP/1.1" << CRLF;
-                
-            int port = base_uri.port();
-                
-            if (base_uri.is_port_default())
-            {
-                port = (ctx->m_connection->is_ssl() ? 443 : 80);
-            }
-                
-            // Add the Host header if user has not specified it explicitly
-            if (!ctx->m_request.headers().has(header_names::host))
-            {
-                request_stream << "Host: " << host;
-                if (!base_uri.is_port_default()) {
-                    request_stream << ":" << port;
-                }
-                request_stream << CRLF;
-            }
-                
-            // Extra request headers are constructed here.
-            std::string extra_headers;
-                
-            // Add header for basic proxy authentication
-            if (proxy_type == http_proxy_type::http && ctx->m_http_client->client_config().proxy().credentials().is_set())
-            {
-                extra_headers.append(ctx->generate_basic_proxy_auth_header());
-            }
-
-            if (ctx->m_http_client->client_config().credentials().is_set())
-            {
-                extra_headers.append(ctx->generate_basic_auth_header());
-            }
-
-            // Add the header needed to request a compressed response if supported on this platform and it has been specified in the config
-            if (web::http::details::compression::stream_decompressor::is_supported() && ctx->m_http_client->client_config().request_compressed_response())
-            {
-                extra_headers.append("Accept-Encoding: deflate, gzip\r\n");
-            }
-
-            // Check user specified transfer-encoding.
-            std::string transferencoding;
-            if (ctx->m_request.headers().match(header_names::transfer_encoding, transferencoding) && transferencoding == "chunked")
-            {
-                ctx->m_needChunked = true;
-            }
-            else if (!ctx->m_request.headers().match(header_names::content_length, ctx->m_content_length))
-            {
-                // Stream without content length is the signal of requiring transfer encoding chunked.
-                if (ctx->m_request.body())
-                {
-                    ctx->m_needChunked = true;
-                    extra_headers.append("Transfer-Encoding:chunked\r\n");
-                }
-                else if (ctx->m_request.method() == methods::POST || ctx->m_request.method() == methods::PUT)
-                {
-                    // Some servers do not accept POST/PUT requests with a content length of 0, such as
-                    // lighttpd - http://serverfault.com/questions/315849/curl-post-411-length-required
-                    // old apache versions - https://issues.apache.org/jira/browse/TS-2902
-                    extra_headers.append("Content-Length: 0\r\n");
-                }
-            }
-                
-            if (proxy_type == http_proxy_type::http)
-            {
-                extra_headers.append(
-                    "Cache-Control: no-store, no-cache\r\n"
-                    "Pragma: no-cache\r\n");
-            }
-                
-            request_stream << utility::conversions::to_utf8string(::web::http::details::flatten_http_headers(ctx->m_request.headers()));
-            request_stream << extra_headers;
-            // Enforce HTTP connection keep alive (even for the old HTTP/1.0 protocol).
-            request_stream << "Connection: Keep-Alive" << CRLF << CRLF;
-                
-            // Start connection timeout timer.
-            if (!ctx->m_timer.has_started())
-            {
-                ctx->m_timer.start();
-            }
-                
-            if (ctx->m_connection->is_reused() || proxy_type == http_proxy_type::ssl_tunnel)
-            {
-                // If socket is a reused connection or we're connected via an ssl-tunneling proxy, try to write the request directly. In both cases we have already established a tcp connection.
-                ctx->write_request();
-            }
-            else
-            {
-                // If the connection is new (unresolved and unconnected socket), then start async
-                // call to resolve first, leading eventually to request write.
-                    
-                // For normal http proxies, we want to connect directly to the proxy server. It will relay our request.
-                auto tcp_host = proxy_type == http_proxy_type::http ? proxy_host : host;
-                auto tcp_port = proxy_type == http_proxy_type::http ? proxy_port : port;
-                    
-                tcp::resolver::query query(tcp_host, to_string(tcp_port));
-                auto client = std::static_pointer_cast<asio_client>(ctx->m_http_client);
-                client->m_resolver.async_resolve(query, boost::bind(&asio_context::handle_resolve, ctx, boost::asio::placeholders::error, boost::asio::placeholders::iterator));
-            }
-        
-                // Register for notification on cancellation to abort this request.
-            if (ctx->m_request._cancellation_token() != pplx::cancellation_token::none())
-            {
-                // weak_ptr prevents lambda from taking shared ownership of the context.
-                // Otherwise context replacement in the handle_status_line() would leak the objects.
-                std::weak_ptr<asio_context> ctx_weak(ctx);
-                ctx->m_cancellationRegistration = ctx->m_request._cancellation_token().register_callback([ctx_weak]()
-                {
-                    if (auto ctx_lock = ctx_weak.lock())
-                    {
-                        // Shut down transmissions, close the socket and prevent connection from being pooled.
-                        ctx_lock->m_connection->close();
-                    }
-                });
-            }
-        };
-        
-        if (proxy_type == http_proxy_type::ssl_tunnel)
-        {
-            // The ssl_tunnel_proxy keeps the context alive and then calls back once the ssl tunnel is established via 'start_http_request_flow'
-            std::shared_ptr<ssl_proxy_tunnel> ssl_tunnel = std::make_shared<ssl_proxy_tunnel>(shared_from_this(), start_http_request_flow);
-            ssl_tunnel->start_proxy_connect();
-        }
-        else
-        {
-            start_http_request_flow(shared_from_this());
-        }
-    }
+    void start_request();
 
     template<typename _ExceptionType>
     void report_exception(const _ExceptionType &e)
@@ -885,7 +712,7 @@ private:
         request_context::report_error(errorcodeValue, message);
     }
 
-    void handle_connect(const boost::system::error_code& ec, tcp::resolver::iterator endpoints)
+    void handle_tcp_connect(const boost::system::error_code &ec, tcp::resolver::iterator endpoints)
     {
         m_timer.reset();
         if (!ec)
@@ -903,11 +730,28 @@ private:
         else
         {
             // Replace the connection. This causes old connection object to go out of scope.
-            auto client = std::static_pointer_cast<asio_client>(m_http_client);
+            auto client = std::static_pointer_cast<asio_client<tcp_socket>>(m_http_client);
             m_connection = client->obtain_connection();
 
             auto endpoint = *endpoints;
-            m_connection->async_connect(endpoint, boost::bind(&asio_context::handle_connect, shared_from_this(), boost::asio::placeholders::error, ++endpoints));
+            m_connection->async_connect(endpoint, boost::bind(&asio_context::handle_tcp_connect, this->shared_from_this(), boost::asio::placeholders::error, ++endpoints));
+        }
+    }
+
+    void handle_stream_protocol_connect(const boost::system::error_code &ec)
+    {
+        m_timer.reset();
+        if (!ec)
+        {
+            write_request();
+        }
+        else if (ec.value() == boost::system::errc::operation_canceled || ec.value() == boost::asio::error::operation_aborted)
+        {
+            request_context::report_error(ec.value(), "Request canceled by user.");
+        }
+        else
+        {
+            report_error("Failed to connect to the endpoint", ec, httpclient_errorcode_context::connect);
         }
     }
 
@@ -921,7 +765,7 @@ private:
         {
             m_timer.reset();
             auto endpoint = *endpoints;
-            m_connection->async_connect(endpoint, boost::bind(&asio_context::handle_connect, shared_from_this(), boost::asio::placeholders::error, ++endpoints));
+            m_connection->async_connect(endpoint, boost::bind(&asio_context::handle_tcp_connect, this->shared_from_this(), boost::asio::placeholders::error, ++endpoints));
         }
     }
 
@@ -930,11 +774,11 @@ private:
         // Only perform handshake if a TLS connection and not being reused.
         if (m_connection->is_ssl() && !m_connection->is_reused())
         {
-            const auto weakCtx = std::weak_ptr<asio_context>(shared_from_this());
+            const auto weakCtx = std::weak_ptr<asio_context>(this->shared_from_this());
             m_connection->async_handshake(boost::asio::ssl::stream_base::client,
                                           m_http_client->client_config(),
                                           utility::conversions::to_utf8string(m_http_client->base_uri().host()),
-                                          boost::bind(&asio_context::handle_handshake, shared_from_this(), boost::asio::placeholders::error),
+                                          boost::bind(&asio_context::handle_handshake, this->shared_from_this(), boost::asio::placeholders::error),
 
                                           // Use a weak_ptr since the verify_callback is stored until the connection is destroyed.
                                           // This avoids creating a circular reference since we pool connection objects.
@@ -950,7 +794,7 @@ private:
         }
         else
         {
-            m_connection->async_write(m_body_buf, boost::bind(&asio_context::handle_write_headers, shared_from_this(), boost::asio::placeholders::error));
+            m_connection->async_write(m_body_buf, boost::bind(&asio_context::handle_write_headers, this->shared_from_this(), boost::asio::placeholders::error));
         }
     }
 
@@ -958,7 +802,7 @@ private:
     {
         if (!ec)
         {
-            m_connection->async_write(m_body_buf, boost::bind(&asio_context::handle_write_headers, shared_from_this(), boost::asio::placeholders::error));
+            this->m_connection->async_write(m_body_buf, boost::bind(&asio_context::handle_write_headers, this->shared_from_this(), boost::asio::placeholders::error));
         }
         else
         {
@@ -1040,7 +884,7 @@ private:
         const auto & chunkSize = m_http_client->client_config().chunksize();
         auto readbuf = _get_readbuffer();
         uint8_t *buf = boost::asio::buffer_cast<uint8_t *>(m_body_buf.prepare(chunkSize + http::details::chunked_encoding::additional_encoding_space));
-        const auto this_request = shared_from_this();
+        const auto this_request = this->shared_from_this();
         readbuf.getn(buf + http::details::chunked_encoding::data_offset, chunkSize).then([this_request, buf, chunkSize AND_CAPTURE_MEMBER_FUNCTION_POINTERS](pplx::task<size_t> op)
         {
             size_t readSize = 0;
@@ -1095,7 +939,7 @@ private:
             }
         }
 
-        const auto this_request = shared_from_this();
+        const auto this_request = this->shared_from_this();
         const auto readSize = static_cast<size_t>(std::min(static_cast<uint64_t>(m_http_client->client_config().chunksize()), m_content_length - m_uploaded));
         auto readbuf = _get_readbuffer();
         readbuf.getn(boost::asio::buffer_cast<uint8_t *>(m_body_buf.prepare(readSize)), readSize).then([this_request AND_CAPTURE_MEMBER_FUNCTION_POINTERS](pplx::task<size_t> op)
@@ -1140,7 +984,7 @@ private:
             }
 
             // Read until the end of entire headers
-            m_connection->async_read_until(m_body_buf, CRLF + CRLF, boost::bind(&asio_context::handle_status_line, shared_from_this(), boost::asio::placeholders::error));
+            m_connection->async_read_until(m_body_buf, CRLF + CRLF, boost::bind(&asio_context::handle_status_line, this->shared_from_this(), boost::asio::placeholders::error));
         }
         else
         {
@@ -1196,7 +1040,7 @@ private:
                 new_ctx->m_request_completion = m_request_completion;
                 new_ctx->m_cancellationRegistration = m_cancellationRegistration;
 
-                auto client = std::static_pointer_cast<asio_client>(m_http_client);
+                auto client = std::static_pointer_cast<asio_client<SOCKET_T>>(m_http_client);
                 // Resend the request using the new context.
                 client->send_request(new_ctx);
             }
@@ -1294,11 +1138,11 @@ private:
             if (!needChunked)
             {
                 async_read_until_buffersize(static_cast<size_t>(std::min(m_content_length, static_cast<uint64_t>(m_http_client->client_config().chunksize()))),
-                                            boost::bind(&asio_context::handle_read_content, shared_from_this(), boost::asio::placeholders::error));
+                                            boost::bind(&asio_context::handle_read_content, this->shared_from_this(), boost::asio::placeholders::error));
             }
             else
             {
-                m_connection->async_read_until(m_body_buf, CRLF, boost::bind(&asio_context::handle_chunk_header, shared_from_this(), boost::asio::placeholders::error));
+                m_connection->async_read_until(m_body_buf, CRLF, boost::bind(&asio_context::handle_chunk_header, this->shared_from_this(), boost::asio::placeholders::error));
             }
         }
     }
@@ -1338,7 +1182,7 @@ private:
             else
             {
                 async_read_until_buffersize(octets + CRLF.size(), // + 2 for crlf
-                                            boost::bind(&asio_context::handle_chunk, shared_from_this(), boost::asio::placeholders::error, octets));
+                                            boost::bind(&asio_context::handle_chunk, this->shared_from_this(), boost::asio::placeholders::error, octets));
             }
         }
         else
@@ -1376,7 +1220,7 @@ private:
             else
             {
                 auto writeBuffer = _get_writebuffer();
-                const auto this_request = shared_from_this();
+                const auto this_request = this->shared_from_this();
                 if(m_decompressor)
                 {
                     auto decompressed = m_decompressor->decompress(boost::asio::buffer_cast<const uint8_t *>(m_body_buf.data()), to_read);
@@ -1478,7 +1322,7 @@ private:
         if (m_downloaded < m_content_length)
         {
             // more data need to be read
-            const auto this_request = shared_from_this();
+            const auto this_request = this->shared_from_this();
 
             auto read_size = static_cast<size_t>(std::min(static_cast<uint64_t>(m_body_buf.size()), m_content_length - m_downloaded));
 
@@ -1659,7 +1503,7 @@ private:
     bool m_needChunked;
     timeout_timer m_timer;
     boost::asio::streambuf m_body_buf;
-    std::shared_ptr<asio_connection> m_connection;
+    std::shared_ptr<asio_connection<SOCKET_T>> m_connection;
     
     std::unique_ptr<web::http::details::compression::stream_decompressor> m_decompressor;
 
@@ -1668,15 +1512,382 @@ private:
 #endif
 };
 
+template<>
+void asio_context<tcp_socket>::start_request()
+{
+    if (m_request._cancellation_token().is_canceled())
+    {
+        request_context::report_error(make_error_code(std::errc::operation_canceled).value(), "Request canceled by user.");
+        return;
+    }
+
+    http_proxy_type proxy_type = http_proxy_type::none;
+    std::string proxy_host;
+    int proxy_port = -1;
+
+    // There is no support for auto-detection of proxies on non-windows platforms, it must be specified explicitly from the client code.
+    if (m_http_client->client_config().proxy().is_specified())
+    {
+        proxy_type = m_http_client->base_uri().scheme() == U("https") ? http_proxy_type::ssl_tunnel : http_proxy_type::http;
+        auto proxy = m_http_client->client_config().proxy();
+        auto proxy_uri = proxy.address();
+        proxy_port = proxy_uri.port() == -1 ? 8080 : proxy_uri.port();
+        proxy_host = utility::conversions::to_utf8string(proxy_uri.host());
+    }
+
+    auto start_http_request_flow = [proxy_type, proxy_host, proxy_port AND_CAPTURE_MEMBER_FUNCTION_POINTERS](std::shared_ptr<asio_context> ctx)
+    {
+        if (ctx->m_request._cancellation_token().is_canceled())
+        {
+            ctx->request_context::report_error(make_error_code(std::errc::operation_canceled).value(), "Request canceled by user.");
+            return;
+        }
+
+        const auto &base_uri = ctx->m_http_client->base_uri();
+        const auto full_uri = uri_builder(base_uri).append(ctx->m_request.relative_uri()).to_uri();
+
+        // For a normal http proxy, we need to specify the full request uri, otherwise just specify the resource
+        auto encoded_resource = proxy_type == http_proxy_type::http ? full_uri.to_string() : full_uri.resource().to_string();
+
+        if (encoded_resource.empty())
+        {
+            encoded_resource = U("/");
+        }
+
+        const auto &method = ctx->m_request.method();
+
+        // stop injection of headers via method
+        // resource should be ok, since it's been encoded
+        // and host won't resolve
+        if (!::web::http::details::validate_method(method))
+        {
+            ctx->report_exception(http_exception("The method string is invalid."));
+            return;
+        }
+
+        std::ostream request_stream(&ctx->m_body_buf);
+        request_stream.imbue(std::locale::classic());
+        const auto &host = utility::conversions::to_utf8string(base_uri.host());
+
+        request_stream << utility::conversions::to_utf8string(method) << " " << utility::conversions::to_utf8string(encoded_resource) << " " << "HTTP/1.1" << CRLF;
+
+        int port = base_uri.port();
+
+        if (base_uri.is_port_default())
+        {
+            port = (ctx->m_connection->is_ssl() ? 443 : 80);
+        }
+
+        // Add the Host header if user has not specified it explicitly
+        if (!ctx->m_request.headers().has(header_names::host))
+        {
+            request_stream << "Host: " << host;
+            if (!base_uri.is_port_default()) {
+                request_stream << ":" << port;
+            }
+            request_stream << CRLF;
+        }
+
+        // Extra request headers are constructed here.
+        std::string extra_headers;
+
+        // Add header for basic proxy authentication
+        if (proxy_type == http_proxy_type::http && ctx->m_http_client->client_config().proxy().credentials().is_set())
+        {
+            extra_headers.append(ctx->generate_basic_proxy_auth_header());
+        }
+
+        if (ctx->m_http_client->client_config().credentials().is_set())
+        {
+            extra_headers.append(ctx->generate_basic_auth_header());
+        }
+
+        // Add the header needed to request a compressed response if supported on this platform and it has been specified in the config
+        if (web::http::details::compression::stream_decompressor::is_supported() && ctx->m_http_client->client_config().request_compressed_response())
+        {
+            extra_headers.append("Accept-Encoding: deflate, gzip\r\n");
+        }
+
+        // Check user specified transfer-encoding.
+        std::string transferencoding;
+        if (ctx->m_request.headers().match(header_names::transfer_encoding, transferencoding) && transferencoding == "chunked")
+        {
+            ctx->m_needChunked = true;
+        }
+        else if (!ctx->m_request.headers().match(header_names::content_length, ctx->m_content_length))
+        {
+            // Stream without content length is the signal of requiring transfer encoding chunked.
+            if (ctx->m_request.body())
+            {
+                ctx->m_needChunked = true;
+                extra_headers.append("Transfer-Encoding:chunked\r\n");
+            }
+            else if (ctx->m_request.method() == methods::POST || ctx->m_request.method() == methods::PUT)
+            {
+                // Some servers do not accept POST/PUT requests with a content length of 0, such as
+                // lighttpd - http://serverfault.com/questions/315849/curl-post-411-length-required
+                // old apache versions - https://issues.apache.org/jira/browse/TS-2902
+                extra_headers.append("Content-Length: 0\r\n");
+            }
+        }
+
+        if (proxy_type == http_proxy_type::http)
+        {
+            extra_headers.append(
+                    "Cache-Control: no-store, no-cache\r\n"
+                    "Pragma: no-cache\r\n");
+        }
+
+        request_stream << utility::conversions::to_utf8string(::web::http::details::flatten_http_headers(ctx->m_request.headers()));
+        request_stream << extra_headers;
+        // Enforce HTTP connection keep alive (even for the old HTTP/1.0 protocol).
+        request_stream << "Connection: Keep-Alive" << CRLF << CRLF;
+
+        // Start connection timeout timer.
+        if (!ctx->m_timer.has_started())
+        {
+            ctx->m_timer.start();
+        }
+
+        if (ctx->m_connection->is_reused() || proxy_type == http_proxy_type::ssl_tunnel)
+        {
+            // If socket is a reused connection or we're connected via an ssl-tunneling proxy, try to write the request directly. In both cases we have already established a tcp connection.
+            ctx->write_request();
+        }
+        else
+        {
+            // If the connection is new (unresolved and unconnected socket), then start async
+            // call to resolve first, leading eventually to request write.
+
+            // For normal http proxies, we want to connect directly to the proxy server. It will relay our request.
+            auto tcp_host = proxy_type == http_proxy_type::http ? proxy_host : host;
+            auto tcp_port = proxy_type == http_proxy_type::http ? proxy_port : port;
+
+            tcp::resolver::query query(tcp_host, to_string(tcp_port));
+            auto client = std::static_pointer_cast<asio_client<tcp_socket>>(ctx->m_http_client);
+            client->m_resolver.async_resolve(query, boost::bind(&asio_context::handle_resolve, ctx, boost::asio::placeholders::error, boost::asio::placeholders::iterator));
+        }
+
+        // Register for notification on cancellation to abort this request.
+        if (ctx->m_request._cancellation_token() != pplx::cancellation_token::none())
+        {
+            // weak_ptr prevents lambda from taking shared ownership of the context.
+            // Otherwise context replacement in the handle_status_line() would leak the objects.
+            std::weak_ptr<asio_context> ctx_weak(ctx);
+            ctx->m_cancellationRegistration = ctx->m_request._cancellation_token().register_callback([ctx_weak]() {
+                if (auto ctx_lock = ctx_weak.lock())
+                {
+                 // Shut down transmissions, close the socket and prevent connection from being pooled.
+                 ctx_lock->m_connection->close();
+                }
+            });
+        }
+    };
+
+    if (proxy_type == http_proxy_type::ssl_tunnel)
+    {
+        // The ssl_tunnel_proxy keeps the context alive and then calls back once the ssl tunnel is established via 'start_http_request_flow'
+        std::shared_ptr<ssl_proxy_tunnel> ssl_tunnel = std::make_shared<ssl_proxy_tunnel>(this->shared_from_this(), start_http_request_flow);
+        ssl_tunnel->start_proxy_connect();
+    }
+    else
+    {
+        start_http_request_flow(this->shared_from_this());
+    }
+}
+
+template<>
+void asio_context<stream_socket>::start_request()
+{
+    if (m_request._cancellation_token().is_canceled())
+    {
+        request_context::report_error(make_error_code(std::errc::operation_canceled).value(), "Request canceled by user.");
+        return;
+    }
+
+    http_proxy_type proxy_type = http_proxy_type::none;
+    std::string proxy_host;
+    int proxy_port = -1;
+
+    // There is no support for auto-detection of proxies on non-windows platforms, it must be specified explicitly from the client code.
+    if (m_http_client->client_config().proxy().is_specified())
+    {
+        proxy_type = m_http_client->base_uri().scheme() == U("https") ? http_proxy_type::ssl_tunnel : http_proxy_type::http;
+        auto proxy = m_http_client->client_config().proxy();
+        auto proxy_uri = proxy.address();
+        proxy_port = proxy_uri.port() == -1 ? 8080 : proxy_uri.port();
+        proxy_host = utility::conversions::to_utf8string(proxy_uri.host());
+    }
+
+    auto start_http_request_flow = [proxy_type, proxy_host, proxy_port AND_CAPTURE_MEMBER_FUNCTION_POINTERS](std::shared_ptr<asio_context> ctx)
+    {
+        if (ctx->m_request._cancellation_token().is_canceled())
+        {
+            ctx->request_context::report_error(make_error_code(std::errc::operation_canceled).value(), "Request canceled by user.");
+            return;
+        }
+
+        const auto &base_uri = ctx->m_http_client->base_uri();
+        const auto full_uri = uri_builder(base_uri).append(ctx->m_request.relative_uri()).to_uri();
+
+        // For a normal http proxy, we need to specify the full request uri, otherwise just specify the resource
+        auto encoded_resource = proxy_type == http_proxy_type::http ? full_uri.to_string() : full_uri.resource().to_string();
+
+        if (encoded_resource.empty())
+        {
+            encoded_resource = U("/");
+        }
+
+        const auto &method = ctx->m_request.method();
+
+        // stop injection of headers via method
+        // resource should be ok, since it's been encoded
+        // and host won't resolve
+        if (!::web::http::details::validate_method(method))
+        {
+            ctx->report_exception(http_exception("The method string is invalid."));
+            return;
+        }
+
+        std::ostream request_stream(&ctx->m_body_buf);
+        request_stream.imbue(std::locale::classic());
+        const auto &host = utility::conversions::to_utf8string(base_uri.host());
+
+        request_stream << utility::conversions::to_utf8string(method) << " " << utility::conversions::to_utf8string(encoded_resource) << " " << "HTTP/1.1" << CRLF;
+
+        int port = base_uri.port();
+
+        if (base_uri.is_port_default())
+        {
+            port = (ctx->m_connection->is_ssl() ? 443 : 80);
+        }
+
+        // Add the Host header if user has not specified it explicitly
+        if (!ctx->m_request.headers().has(header_names::host))
+        {
+            request_stream << "Host: " << host;
+            if (!base_uri.is_port_default()) {
+                request_stream << ":" << port;
+            }
+            request_stream << CRLF;
+        }
+
+        // Extra request headers are constructed here.
+        std::string extra_headers;
+
+        // Add header for basic proxy authentication
+        if (proxy_type == http_proxy_type::http && ctx->m_http_client->client_config().proxy().credentials().is_set())
+        {
+            extra_headers.append(ctx->generate_basic_proxy_auth_header());
+        }
+
+        if (ctx->m_http_client->client_config().credentials().is_set())
+        {
+            extra_headers.append(ctx->generate_basic_auth_header());
+        }
+
+        // Add the header needed to request a compressed response if supported on this platform and it has been specified in the config
+        if (web::http::details::compression::stream_decompressor::is_supported() && ctx->m_http_client->client_config().request_compressed_response())
+        {
+            extra_headers.append("Accept-Encoding: deflate, gzip\r\n");
+        }
+
+        // Check user specified transfer-encoding.
+        std::string transferencoding;
+        if (ctx->m_request.headers().match(header_names::transfer_encoding, transferencoding) && transferencoding == "chunked")
+        {
+            ctx->m_needChunked = true;
+        }
+        else if (!ctx->m_request.headers().match(header_names::content_length, ctx->m_content_length))
+        {
+            // Stream without content length is the signal of requiring transfer encoding chunked.
+            if (ctx->m_request.body())
+            {
+                ctx->m_needChunked = true;
+                extra_headers.append("Transfer-Encoding:chunked\r\n");
+            }
+            else if (ctx->m_request.method() == methods::POST || ctx->m_request.method() == methods::PUT)
+            {
+                // Some servers do not accept POST/PUT requests with a content length of 0, such as
+                // lighttpd - http://serverfault.com/questions/315849/curl-post-411-length-required
+                // old apache versions - https://issues.apache.org/jira/browse/TS-2902
+                extra_headers.append("Content-Length: 0\r\n");
+            }
+        }
+
+        if (proxy_type == http_proxy_type::http)
+        {
+            extra_headers.append(
+                    "Cache-Control: no-store, no-cache\r\n"
+                    "Pragma: no-cache\r\n");
+        }
+
+        request_stream << utility::conversions::to_utf8string(::web::http::details::flatten_http_headers(ctx->m_request.headers()));
+        request_stream << extra_headers;
+        // Enforce HTTP connection keep alive (even for the old HTTP/1.0 protocol).
+        request_stream << "Connection: Keep-Alive" << CRLF << CRLF;
+
+        // Start connection timeout timer.
+        if (!ctx->m_timer.has_started())
+        {
+            ctx->m_timer.start();
+        }
+
+        if (ctx->m_connection->is_reused() || proxy_type == http_proxy_type::ssl_tunnel)
+        {
+            // If socket is a reused connection or we're connected via an ssl-tunneling proxy, try to write the request directly. In both cases we have already established a tcp connection.
+            ctx->write_request();
+        }
+        else
+        {
+            // If the connection is new (unconnected socket), then start async
+            // call to connect first, leading eventually to request write.
+            ctx->m_timer.reset();
+            boost::asio::local::stream_protocol::endpoint endpoint{"/home/nam/socket"};
+            ctx->m_connection->async_connect(endpoint, boost::bind(&asio_context::handle_stream_protocol_connect, ctx, boost::asio::placeholders::error));
+        }
+
+        // Register for notification on cancellation to abort this request.
+        if (ctx->m_request._cancellation_token() != pplx::cancellation_token::none())
+        {
+            // weak_ptr prevents lambda from taking shared ownership of the context.
+            // Otherwise context replacement in the handle_status_line() would leak the objects.
+            std::weak_ptr<asio_context> ctx_weak(ctx);
+            ctx->m_cancellationRegistration = ctx->m_request._cancellation_token().register_callback([ctx_weak]() {
+                if (auto ctx_lock = ctx_weak.lock())
+                {
+                    // Shut down transmissions, close the socket and prevent connection from being pooled.
+                    ctx_lock->m_connection->close();
+                }
+            });
+        }
+    };
+
+    if (proxy_type == http_proxy_type::ssl_tunnel)
+    {
+//        // The ssl_tunnel_proxy keeps the context alive and then calls back once the ssl tunnel is established via 'start_http_request_flow'
+//        std::shared_ptr<ssl_proxy_tunnel> ssl_tunnel = std::make_shared<ssl_proxy_tunnel>(this->shared_from_this(), start_http_request_flow);
+//        ssl_tunnel->start_proxy_connect();
+    }
+    else
+    {
+        start_http_request_flow(this->shared_from_this());
+    }
+}
 
 std::shared_ptr<_http_client_communicator> create_platform_final_pipeline_stage(uri&& base_uri, http_client_config&& client_config)
 {
-    return std::make_shared<asio_client>(std::move(base_uri), std::move(client_config));
+    // TODO: It would be better to use scheme instead of the hostname to select the local socket client
+    if (base_uri.host() == U("local-socket"))
+        return std::make_shared<asio_client<stream_socket>>(std::move(base_uri), std::move(client_config));
+    else
+        return std::make_shared<asio_client<tcp_socket>>(std::move(base_uri), std::move(client_config));
 }
 
-void asio_client::send_request(const std::shared_ptr<request_context> &request_ctx)
+template<class SOCKET_T>
+void asio_client<SOCKET_T>::send_request(const std::shared_ptr<request_context> &request_ctx)
 {
-    auto ctx = std::static_pointer_cast<asio_context>(request_ctx);
+    auto ctx = std::static_pointer_cast<asio_context<SOCKET_T>>(request_ctx);
 
     try
     {
@@ -1698,10 +1909,11 @@ void asio_client::send_request(const std::shared_ptr<request_context> &request_c
     ctx->start_request();
 }
 
-pplx::task<http_response> asio_client::propagate(http_request request)
+template<class SOCKET_T>
+pplx::task<http_response> asio_client<SOCKET_T>::propagate(http_request request)
 {
     auto self = std::static_pointer_cast<_http_client_communicator>(shared_from_this());
-    auto context = details::asio_context::create_request_context(self, request);
+    auto context = details::asio_context<SOCKET_T>::create_request_context(self, request);
 
     // Use a task to externally signal the final result and completion of the task.
     auto result_task = pplx::create_task(context->m_request_completion);

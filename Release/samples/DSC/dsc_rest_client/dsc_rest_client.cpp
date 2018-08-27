@@ -11,7 +11,19 @@ int main()
 {
     try
     {
-        http_client np_client(U("http://localsocket/home/nam/socket/metaconfiguration"));
+        http_client net_client(U("https://bing.com"));
+
+        net_client.request(methods::GET)
+            .then([=](http_response response)
+            {
+                return response.extract_string();
+            })
+            .then([=](string_t response) {
+                ucout << response << endl;
+            })
+            .wait();
+
+        http_client local_client(U("http://local-socket"));
 
         http_request request(methods::PUT);
         request.headers().add(U("Content-Type"), U("application/json"));
@@ -19,17 +31,19 @@ int main()
         body[U("hello")] = web::json::value::string(U("there"));
         request.set_body(body);
 
-        np_client.request(request).then([=](http_response response)
-        {
-            for (auto h : response.headers())
-                ucout << h.first << U(": ") << h.second << std::endl;
+        local_client.request(request)
+            .then([=](http_response response)
+            {
+                for (auto h : response.headers())
+                    ucout << h.first << U(": ") << h.second << std::endl;
 
-            return response.extract_string(true);
-        }).then([=](string_t response)
-        {
-            ucout << response << endl;
-        }).wait();
-
+                return response.extract_string(true);
+            })
+            .then([=](string_t response)
+            {
+                ucout << response << endl;
+            })
+            .wait();
     }
     catch (const std::exception &e)
     {
