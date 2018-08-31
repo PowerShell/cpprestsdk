@@ -28,6 +28,7 @@
 #endif
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
+#include <boost/filesystem.hpp>
 #if defined(__clang__)
 #pragma clang diagnostic pop
 #endif
@@ -204,6 +205,12 @@ namespace
                 }
             }
             return nullptr;
+        }
+        
+        std::string get_socket_file_path() {
+            boost::filesystem::path exe_path = boost::filesystem::read_symlink("/proc/self/exe").parent_path();
+            boost::filesystem::path socket_path = exe_path/"sockets/dsc";
+            return socket_path.string();
         }
 
     private:
@@ -471,8 +478,15 @@ template<>
 void hostport_listener<stream_socket, stream_acceptor>::start()
 {
     auto& service = crossplat::threadpool::shared_instance().service();
+    
+    // Remove old socket file.
+    std::string socket_file_path = get_socket_file_path();
+    if (boost::filesystem::exists(socket_file_path.c_str()))
+    {
+        boost::filesystem::remove_all(socket_file_path.c_str());
+    }
 
-    local::stream_protocol::endpoint endpoint("/home/nam/socket");
+    local::stream_protocol::endpoint endpoint(socket_file_path.c_str());
 
     m_acceptor.reset(new local::stream_protocol::acceptor(service, endpoint));
 

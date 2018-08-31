@@ -1843,7 +1843,14 @@ void asio_context<stream_socket>::start_request()
             // If the connection is new (unconnected socket), then start async
             // call to connect first, leading eventually to request write.
             ctx->m_timer.reset();
-            boost::asio::local::stream_protocol::endpoint endpoint{"/home/nam/socket"};
+
+            // Get the socket file path.
+            std::string socket_path = ctx->m_request.absolute_uri().path();
+            std::string relative_uri = ctx->m_request.relative_uri().path();
+            if(relative_uri.size() > 0) {
+                socket_path = socket_path.substr(0, (socket_path.size() - relative_uri.size()));
+            }
+            boost::asio::local::stream_protocol::endpoint endpoint{socket_path};
             ctx->m_connection->async_connect(endpoint, boost::bind(&asio_context::handle_stream_protocol_connect, ctx, boost::asio::placeholders::error));
         }
 
