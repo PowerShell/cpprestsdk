@@ -14,14 +14,21 @@ int main (void)
 {
     try
     {
-        http_listener listener(U("http://socket-home-nam-socket"));
+        http_listener listener(U("http://local-socket"));
+
+        listener.support(methods::GET, [](http_request request) {
+            http_response response;
+            response.set_status_code(status_codes::OK);
+            response.set_body("HELLO");
+            request.reply(response);
+        });
 
         listener.support(methods::PUT, [](http_request request) {
             request.extract_string().then([=](string_t body) {
                 http_response response;
                 response.set_status_code(status_codes::OK);
                 response.set_body(body);
-                response.headers().add(U("DSC-Header"), U("Some Value"));
+                response.headers().add(U("Custom-Header"), U("Some Value"));
                 request.reply(response);
             });
         });

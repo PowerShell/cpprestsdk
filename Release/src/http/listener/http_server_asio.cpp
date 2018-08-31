@@ -46,8 +46,6 @@ using std::to_string;
 using namespace boost::asio;
 using namespace boost::asio::ip;
 
-#define DSC_FORCE_HTTP_LISTENER_LOCAL_SOCKET
-
 typedef boost::asio::ip::tcp::socket   tcp_socket;
 typedef boost::asio::ip::tcp::acceptor tcp_acceptor;
 typedef boost::asio::local::stream_protocol::acceptor stream_acceptor;
@@ -469,8 +467,6 @@ void hostport_listener<SOCKET_T, ACCEPTOR_T>::internal_erase_connection(asio_ser
     }
 }
 
-#if defined(DSC_FORCE_HTTP_LISTENER_LOCAL_SOCKET)
-
 template<>
 void hostport_listener<stream_socket, stream_acceptor>::start()
 {
@@ -492,8 +488,6 @@ will_deref_and_erase_t asio_server_connection<stream_socket, stream_acceptor>::s
 {
     return start_request_response();
 }
-
-#else
 
 template<>
 void hostport_listener<tcp_socket, tcp_acceptor>::start()
@@ -545,8 +539,6 @@ will_deref_and_erase_t asio_server_connection<tcp_socket, tcp_acceptor>::start(b
         return start_request_response();
     }
 }
-
-#endif
 
 template<class SOCKET_T, class ACCEPTOR_T>
 void asio_server_connection<SOCKET_T, ACCEPTOR_T>::close()
@@ -730,14 +722,10 @@ will_deref_and_erase_t asio_server_connection<SOCKET_T, ACCEPTOR_T>::handle_http
     }
 }
 
-#if defined(DSC_FORCE_HTTP_LISTENER_LOCAL_SOCKET)
-
 template<>
 utility::string_t asio_server_connection<stream_socket, stream_acceptor>::get_remote_address() {
     return _XPLATSTR("127.0.0.1");
 }
-
-#else
 
 template<>
 utility::string_t asio_server_connection<tcp_socket, tcp_acceptor>::get_remote_address() {
@@ -748,8 +736,6 @@ utility::string_t asio_server_connection<tcp_socket, tcp_acceptor>::get_remote_a
     }
     return _XPLATSTR("");
 }
-
-#endif
 
 template<class SOCKET_T, class ACCEPTOR_T>
 will_deref_and_erase_t asio_server_connection<SOCKET_T, ACCEPTOR_T>::handle_headers()
@@ -1423,6 +1409,12 @@ pplx::task<void> http_linux_server<SOCKET_T, ACCEPTOR_T>::respond(http_response 
     return pplx::create_task(p_context->m_response_completed);
 }
 
+std::unique_ptr<web::http::experimental::details::http_server> make_http_socket_server(bool local_socket) {
+    if (local_socket)
+        return make_unique<http_linux_server<stream_socket, stream_acceptor>>();
+    else
+        return make_unique<http_linux_server<tcp_socket, tcp_acceptor>>();
+}
 }
 
 namespace web
@@ -1436,11 +1428,7 @@ namespace details
 
 std::unique_ptr<http_server> make_http_asio_server()
 {
-#if defined(DSC_FORCE_HTTP_LISTENER_LOCAL_SOCKET)
-    return make_unique<http_linux_server<stream_socket, stream_acceptor>>();
-#else
-    return make_unique<http_linux_server<tcp_socket, tcp_acceptor>>();
-#endif
+    return make_http_socket_server(true);
 }
 
 }}}}
