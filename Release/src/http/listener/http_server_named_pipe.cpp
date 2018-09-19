@@ -98,7 +98,7 @@ named_pipe_request_context::~named_pipe_request_context()
 
     if (m_pipeHandle != nullptr)
     {
-        // TODO: Need to FlushFileBuffers before disconnecting (https://msdn.microsoft.com/en-us/library/windows/desktop/aa365598(v=vs.85).aspx)
+        FlushFileBuffers(m_pipeHandle);
         DisconnectNamedPipe(m_pipeHandle);
         CloseHandle(m_pipeHandle);
     }
