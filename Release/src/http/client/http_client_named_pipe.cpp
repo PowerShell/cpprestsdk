@@ -179,7 +179,9 @@ public:
 
     named_pipe_client(http::uri address, http_client_config client_config)
         : _http_client_communicator(std::move(address), std::move(client_config))
-    {}
+    {
+        m_namedPipe = INVALID_HANDLE_VALUE;
+    }
 
     named_pipe_client(const named_pipe_client&) = delete;
     named_pipe_client &operator=(const named_pipe_client&) = delete;
@@ -187,7 +189,9 @@ public:
     // Closes session.
     ~named_pipe_client()
     {
-        // TODO
+        if (m_namedPipe != INVALID_HANDLE_VALUE) {
+            CloseHandle(m_namedPipe);
+        }
     }
 
     virtual pplx::task<http_response> propagate(http_request request) override
