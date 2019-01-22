@@ -237,6 +237,8 @@ protected:
     // Start sending request.
     void send_request(_In_ const std::shared_ptr<request_context> &request)
     {
+        const DWORD  nTimeOut = 10000;
+        int retry_count = 3;
         const auto& config = client_config();
 
         http_request &msg = request->m_request;
@@ -248,16 +250,29 @@ protected:
 
         utility::string_t pipe_name = U("\\\\.\\pipe\\") + path[0];
 
-        // TODO: Need to close pipe handle
-        // TODO: Add timeout
-        m_namedPipe = CreateFile(
-            pipe_name.c_str(),
-            GENERIC_READ | GENERIC_WRITE,
-            0,
-            NULL,
-            OPEN_EXISTING,
-            0,
-            NULL);
+        while(retry_count > 0) {
+            // TODO: Need to close pipe handle
+            m_namedPipe = CreateFile(
+                pipe_name.c_str(),
+                GENERIC_READ | GENERIC_WRITE,
+                0,
+                NULL,
+                OPEN_EXISTING,
+                0,
+                NULL);
+
+            auto errorCode = GetLastError();
+            if (m_namedPipe != INVALID_HANDLE_VALUE || errorCode != ERROR_PIPE_BUSY) 
+                break;
+
+            // Wait for pipe instance for 10 seconds
+            if(!WaitNamedPipe(pipe_name.c_str(), nTimeOut)) 
+            {
+                named_pipe_context->report_error(errorCode, build_error_msg(errorCode, "Could not open pipe: 10 second wait timed out."));
+                break;
+            }
+            retry_count--;
+        }
 
         if (m_namedPipe == INVALID_HANDLE_VALUE)
         {
