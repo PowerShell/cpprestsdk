@@ -81,7 +81,8 @@ class http_client_config
 public:
     http_client_config() :
         m_guarantee_order(false),
-        m_timeout(std::chrono::seconds(30)),
+// Set the default http_client time out to 5 minutes.
+        m_timeout(std::chrono::seconds(300)),
         m_chunksize(0),
         m_request_compressed(false)
 #if !defined(__cplusplus_winrt)
