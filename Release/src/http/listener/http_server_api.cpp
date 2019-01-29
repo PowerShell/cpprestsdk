@@ -10,7 +10,11 @@
 ****/
 
 #include "stdafx.h"
+
+#if defined(_WIN32)
+// Pipes are only supported on Windows.
 #define DSC_FORCE_HTTP_LISTENER_NAMED_PIPE 1
+#endif
 
 #if !defined(_WIN32) || (_WIN32_WINNT >= _WIN32_WINNT_VISTA && !defined(__cplusplus_winrt)) || defined(CPPREST_FORCE_HTTP_LISTENER_ASIO)
 #include "http_server_impl.h"
