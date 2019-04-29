@@ -42,6 +42,7 @@ using namespace http::experimental::details;
 
 // Maximum number of concurrent named pipe instances (1 instance per request).
 const DWORD MAX_NUMBER_OF_CONCURRENT_REQUESTS = 128;
+const DWORD nDefaultTimeOut = 20000;  // clients wait upto 20 sec for pipe instance to be available when all pipe instances are busy.
 
 namespace web
 {
