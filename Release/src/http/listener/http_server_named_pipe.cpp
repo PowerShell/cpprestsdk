@@ -40,9 +40,7 @@ using namespace http::experimental::details;
 #define CRLF std::string("\r\n")
 #define CRLFCRLF std::string("\r\n\r\n")
 
-// Maximum number of concurrent named pipe instances (1 instance per request).
-const DWORD MAX_NUMBER_OF_CONCURRENT_REQUESTS = 128;
-const DWORD nDefaultTimeOut = 20000;  // clients wait upto 20 sec for pipe instance to be available when all pipe instances are busy.
+const DWORD nDefaultTimeOut = 10000;  // clients wait upto 10 sec for pipe instance to be available when all pipe instances are busy.
 
 namespace web
 {
@@ -554,7 +552,7 @@ void named_pipe_listener::async_receive_request()
         pipe_name.c_str(),
         PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
         PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
-        MAX_NUMBER_OF_CONCURRENT_REQUESTS,
+        PIPE_UNLIMITED_INSTANCES,
         PIPE_BUFFER_SIZE,
         PIPE_BUFFER_SIZE,
         0,
