@@ -275,7 +275,7 @@ protected:
 				// Wait for pipe instance to be avialabe, upto 10 sec(pipe server specified default)
 				if (!WaitNamedPipe(pipe_name.c_str(), NMPWAIT_USE_DEFAULT_WAIT))
 				{
-					if (retry_count == 0)
+					if (retry_count <= 0)
                     {
 					    named_pipe_context->report_error(errorCode, build_error_msg(errorCode, "Could not open pipe: 10 second wait timed out and made 3 attempts."));
                         break;
