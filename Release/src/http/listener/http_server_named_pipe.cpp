@@ -555,7 +555,7 @@ void named_pipe_listener::async_receive_request()
         PIPE_UNLIMITED_INSTANCES,
         PIPE_BUFFER_SIZE,
         PIPE_BUFFER_SIZE,
-        0,
+        nDefaultTimeOut,
         &security_attributes);
 
     if (pipeHandle == INVALID_HANDLE_VALUE)
