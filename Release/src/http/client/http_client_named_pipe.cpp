@@ -237,7 +237,6 @@ protected:
     // Start sending request.
     void send_request(_In_ const std::shared_ptr<request_context> &request)
     {
-        const DWORD  nTimeOut = 10000;
         int retry_count = 3;
         const auto& config = client_config();
 
@@ -250,7 +249,7 @@ protected:
 
         utility::string_t pipe_name = U("\\\\.\\pipe\\") + path[0];
 
-        while(retry_count > 0) {
+        while(retry_count-- > 0) {
             // TODO: Need to close pipe handle
             m_namedPipe = CreateFile(
                 pipe_name.c_str(),
@@ -261,17 +260,28 @@ protected:
                 0,
                 NULL);
 
-            auto errorCode = GetLastError();
-            if (m_namedPipe != INVALID_HANDLE_VALUE || errorCode != ERROR_PIPE_BUSY) 
-                break;
-
-            // Wait for pipe instance for 10 seconds
-            if(!WaitNamedPipe(pipe_name.c_str(), nTimeOut)) 
+            if (m_namedPipe != INVALID_HANDLE_VALUE)
             {
-                named_pipe_context->report_error(errorCode, build_error_msg(errorCode, "Could not open pipe: 10 second wait timed out."));
                 break;
             }
-            retry_count--;
+            auto errorCode = GetLastError();
+            if (errorCode != ERROR_PIPE_BUSY)
+            {
+                named_pipe_context->report_error(errorCode, build_error_msg(errorCode, "Error opening named pipe"));
+                break;
+            }
+            else
+            {
+                // Wait for pipe instance to be avialabe, upto 10 sec(pipe server specified default)
+                if (!WaitNamedPipe(pipe_name.c_str(), NMPWAIT_USE_DEFAULT_WAIT))
+                {
+                    if (retry_count <= 0)
+                    {
+                        named_pipe_context->report_error(errorCode, build_error_msg(errorCode, "Could not open pipe: 10 second wait timed out and made 3 attempts."));
+                        break;
+                    }   
+                }
+            }
         }
 
         if (m_namedPipe == INVALID_HANDLE_VALUE)
