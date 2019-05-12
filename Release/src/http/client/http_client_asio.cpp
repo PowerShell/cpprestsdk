@@ -357,11 +357,15 @@ private:
         pool->m_pool_epoch_timer.async_wait([weak_pool](const boost::system::error_code& ec)
         {
             if (ec)
+            {
                 return;
+            }
 
             auto pool = weak_pool.lock();
             if (!pool)
+            {
                 return;
+            }
             auto& self = *pool;
 
             std::lock_guard<std::mutex> lock(self.m_lock);
@@ -721,7 +725,7 @@ private:
         }
         else if (ec.value() == boost::system::errc::operation_canceled || ec.value() == boost::asio::error::operation_aborted)
         {
-            request_context::report_error(ec.value(), "Request canceled by user.");
+            report_error("Request canceled by user.", ec, httpclient_errorcode_context::connect);
         }
         else if (endpoints == tcp::resolver::iterator())
         {
@@ -1046,7 +1050,18 @@ private:
             }
             else
             {
-                report_error("Failed to read HTTP status line", ec, httpclient_errorcode_context::readheader);
+                std::string error_msg;
+                std::string category(ec.category().name());
+                if (ec.value() == 125)
+                {
+                    error_msg = "Failed to read HTTP status line due to http_client object reaching maximum timeout.: error category: " + category + " error message: " + ec.message() + " error value: " + std::to_string(ec.value());
+                    std::cout << error_msg << std::endl;
+                }
+                else
+                {
+                    error_msg = "Failed to read HTTP status line: error category: " + category + " error message: " + ec.message() + " error value: " + std::to_string(ec.value());
+                }
+                report_error(error_msg, ec, httpclient_errorcode_context::readheader);
             }
         }
     }

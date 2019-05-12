@@ -81,8 +81,8 @@ class http_client_config
 public:
     http_client_config() :
         m_guarantee_order(false),
-// Set the default http_client time out to 5 minutes.
-        m_timeout(std::chrono::seconds(300)),
+// Set the default http_client time out to 20 minutes (originally set to 5 minutes, but we need more time to run our inGuest scenario)
+        m_timeout(std::chrono::seconds(1200)),
         m_chunksize(0),
         m_request_compressed(false)
 #if !defined(__cplusplus_winrt)
