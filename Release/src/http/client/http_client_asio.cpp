@@ -1055,7 +1055,6 @@ private:
                 if (ec.value() == 125)
                 {
                     error_msg = "Failed to read HTTP status line due to http_client object reaching maximum timeout.: error category: " + category + " error message: " + ec.message() + " error value: " + std::to_string(ec.value());
-                    std::cout << error_msg << std::endl;
                 }
                 else
                 {
