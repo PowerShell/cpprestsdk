@@ -175,7 +175,8 @@ void named_pipe_request_context::on_request_received(DWORD error_code, DWORD byt
     auto body = request_body_buf.alloc(bodySize);
 
     std::string tmp;
-    request_stream >> tmp;
+	std::getline(request_stream, tmp);
+
     memcpy(body, tmp.c_str(), bodySize);
 
     request_body_buf.commit(bodySize);
