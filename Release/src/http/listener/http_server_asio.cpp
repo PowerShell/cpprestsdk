@@ -209,7 +209,9 @@ namespace
         
         std::string get_socket_file_path() {
             boost::filesystem::path exe_path = boost::filesystem::read_symlink("/proc/self/exe").parent_path();
-            boost::filesystem::path socket_path = exe_path/"sockets/dsc";
+            auto exe_name = boost::filesystem::read_symlink("/proc/self/exe").filename().string();
+            boost::filesystem::path socket_path = exe_path/"sockets/";
+            socket_path += exe_name;
             return socket_path.string();
         }
 
