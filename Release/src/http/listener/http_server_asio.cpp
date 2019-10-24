@@ -210,21 +210,21 @@ namespace
         std::string get_socket_file_path() {
             boost::filesystem::path exe_path = boost::filesystem::read_symlink("/proc/self/exe").parent_path();
             auto exe_name = boost::filesystem::read_symlink("/proc/self/exe").filename().string();
-            boost::filesystem::path socket_path = exe_path/"sockets/";
+            boost::filesystem::path socket_path = exe_path/"sockets";
             boost::filesystem::path socket_file_path;
             boost::filesystem::path dsc_config_path = exe_path/"dsc.config";
 
             if (exe_name.find("worker")!=std::string::npos)
             {
-                socket_file_path = socket_path + "gcworker";
+                socket_file_path = socket_path / "gcworker";
             }
             else
             {
-                socket_file_path = socket_path + "dsc";
+                socket_file_path = socket_path / "dsc";
             }
 
             try {
-                utility::ifstream_t file_handle(dsc_config_path);
+                utility::ifstream_t file_handle(dsc_config_path.string());
                 utility::stringstream_t contents;
 
                 if (file_handle) {
@@ -233,17 +233,14 @@ namespace
                     web::json::value dsc_config = web::json::value::parse(contents);
                     if (dsc_config.has_field(U("ServiceType"))) {
                         utility::string_t service_type = dsc_config.at(U("ServiceType")).as_string();
-                        cout << "cpprest::ServiceType " << service_type;
                         if(boost::iequals(service_type, U("Extension"))) {
-                            socket_file_path = socket_path + "em";
+                            socket_file_path = socket_path / "em";
                         }
                     }
                 }
             }
             catch (web::json::json_exception excep) {
             }
-
-            cout << "cpprest::socket_file_path " << socket_file_path;
 
             return socket_file_path.string();
         }
