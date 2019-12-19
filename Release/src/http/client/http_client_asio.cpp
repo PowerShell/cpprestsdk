@@ -138,13 +138,19 @@ public:
     // This simply instantiates the internal state to support ssl. It does not perform the handshake.
     void upgrade_to_ssl(const std::function<void(boost::asio::ssl::context&)>& ssl_context_callback)
     {
+        std::cout << "======================= inside upgrade_to_ssl" << std::endl;
         std::lock_guard<std::mutex> lock(m_socket_lock);
         assert(!is_ssl());
-        boost::asio::ssl::context ssl_context(boost::asio::ssl::context::sslv23);
+        boost::asio::ssl::context ssl_context(boost::asio::ssl::context::tlsv12);
         ssl_context.set_default_verify_paths();
-        ssl_context.set_options(boost::asio::ssl::context::default_workarounds);
+        ssl_context.set_options(boost::asio::ssl::context::default_workarounds |
+                             boost::asio::ssl::context::no_sslv2 |
+                             boost::asio::ssl::context::no_sslv3 |
+                             boost::asio::ssl::context::no_tlsv1 |
+                             boost::asio::ssl::context::no_tlsv1_1);
         if (ssl_context_callback)
         {
+            std::cout << "======================= setting tls version 1.2" << std::endl;
             ssl_context_callback(ssl_context);
         }
         m_ssl_stream = utility::details::make_unique<boost::asio::ssl::stream<SOCKET_T &>>(m_socket, ssl_context);
@@ -426,6 +432,7 @@ public:
         {
             // Pool was empty. Create a new connection
             conn = std::make_shared<asio_connection<SOCKET_T>>(crossplat::threadpool::shared_instance().service());
+            std::cout << "*************** creating new web socket connection" << std::endl;
             if (m_start_with_ssl)
                 conn->upgrade_to_ssl(this->client_config().get_ssl_context_callback());
         }
