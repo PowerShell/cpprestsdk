@@ -141,7 +141,7 @@ public:
         std::cout << "======================= inside upgrade_to_ssl" << std::endl;
         std::lock_guard<std::mutex> lock(m_socket_lock);
         assert(!is_ssl());
-        boost::asio::ssl::context ssl_context(boost::asio::ssl::context::tlsv11);
+        boost::asio::ssl::context ssl_context(boost::asio::ssl::context::tlsv12);
         ssl_context.set_default_verify_paths();
         ssl_context.set_options(boost::asio::ssl::context::default_workarounds |
                              boost::asio::ssl::context::no_sslv2 |
@@ -149,7 +149,7 @@ public:
                              boost::asio::ssl::context::no_tlsv1);
         if (ssl_context_callback)
         {
-            std::cout << "======================= setting tls version 1.1" << std::endl;
+            std::cout << "======================= setting tls version 1.2" << std::endl;
             ssl_context_callback(ssl_context);
         }
         m_ssl_stream = utility::details::make_unique<boost::asio::ssl::stream<SOCKET_T &>>(m_socket, ssl_context);
