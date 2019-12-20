@@ -140,9 +140,11 @@ public:
     {
         std::lock_guard<std::mutex> lock(m_socket_lock);
         assert(!is_ssl());
-        boost::asio::ssl::context ssl_context(boost::asio::ssl::context::sslv23);
+        boost::asio::ssl::context ssl_context(boost::asio::ssl::context::tlsv12);
         ssl_context.set_default_verify_paths();
-        ssl_context.set_options(boost::asio::ssl::context::default_workarounds);
+        ssl_context.set_options(boost::asio::ssl::context::default_workarounds |
+                             boost::asio::ssl::context::no_sslv2 |
+                             boost::asio::ssl::context::no_sslv3);
         if (ssl_context_callback)
         {
             ssl_context_callback(ssl_context);
