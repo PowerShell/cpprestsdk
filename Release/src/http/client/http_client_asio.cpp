@@ -144,8 +144,7 @@ public:
         ssl_context.set_default_verify_paths();
         ssl_context.set_options(boost::asio::ssl::context::default_workarounds |
                              boost::asio::ssl::context::no_sslv2 |
-                             boost::asio::ssl::context::no_sslv3 |
-                             boost::asio::ssl::context::no_tlsv1);
+                             boost::asio::ssl::context::no_sslv3);
         if (ssl_context_callback)
         {
             ssl_context_callback(ssl_context);
