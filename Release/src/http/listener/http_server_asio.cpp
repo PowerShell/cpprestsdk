@@ -212,7 +212,6 @@ namespace
             auto exe_name = boost::filesystem::read_symlink("/proc/self/exe").filename().string();
             boost::filesystem::path socket_path = exe_path/"sockets";
             boost::filesystem::path socket_file_path;
-            boost::filesystem::path dsc_config_path = exe_path/"dsc.config";
 
             if (exe_name.find("worker")!=std::string::npos)
             {
@@ -221,25 +220,6 @@ namespace
             else
             {
                 socket_file_path = socket_path / "dsc";
-            }
-
-            try {
-                utility::ifstream_t file_handle(dsc_config_path.string());
-                utility::stringstream_t contents;
-
-                if (file_handle) {
-                    contents << file_handle.rdbuf();
-                    file_handle.close();
-                    web::json::value dsc_config = web::json::value::parse(contents);
-                    if (dsc_config.has_field(U("ServiceType"))) {
-                        utility::string_t service_type = dsc_config.at(U("ServiceType")).as_string();
-                        if(boost::iequals(service_type, U("Extension"))) {
-                            socket_file_path = socket_path / "em";
-                        }
-                    }
-                }
-            }
-            catch (web::json::json_exception excep) {
             }
 
             return socket_file_path.string();
